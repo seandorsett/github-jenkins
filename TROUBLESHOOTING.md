@@ -542,7 +542,7 @@ If you're still stuck:
    ```bash
    gh actions-importer version
    # Update if needed
-   gh extension upgrade gh-actions-importer
+   gh extension upgrade github/gh-actions-importer
    ```
 
 5. **File an issue:**

@@ -13,14 +13,16 @@ pipeline {
             steps {
                 script {
                     // Detect which services have changed
+                    // Use GIT_PREVIOUS_COMMIT if available, otherwise compare with HEAD~1
+                    def baseRef = env.GIT_PREVIOUS_COMMIT ?: 'HEAD~1'
                     def changes = sh(
-                        script: '''
-                            git diff --name-only HEAD~1 HEAD | \
+                        script: """
+                            git diff --name-only ${baseRef} HEAD | \
                             grep -E '^services/' | \
                             cut -d'/' -f2 | \
                             sort -u | \
                             tr '\n' ','
-                        ''',
+                        """,
                         returnStdout: true
                     ).trim()
                     
