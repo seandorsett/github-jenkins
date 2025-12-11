@@ -1,0 +1,119 @@
+// Monorepo Pipeline Example
+// Demonstrates building multiple services in a single repository
+
+pipeline {
+    agent any
+    
+    environment {
+        CHANGED_SERVICES = ''
+    }
+    
+    stages {
+        stage('Detect Changes') {
+            steps {
+                script {
+                    // Detect which services have changed
+                    // Use GIT_PREVIOUS_COMMIT if available, otherwise compare with HEAD~1
+                    def baseRef = env.GIT_PREVIOUS_COMMIT ?: 'HEAD~1'
+                    def changes = sh(
+                        script: """
+                            git diff --name-only ${baseRef} HEAD | \
+                            grep -E '^services/' | \
+                            cut -d'/' -f2 | \
+                            sort -u | \
+                            tr '\n' ','
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.CHANGED_SERVICES = changes
+                    echo "Changed services: ${changes}"
+                }
+            }
+        }
+        
+        stage('Build Services') {
+            when {
+                expression { env.CHANGED_SERVICES != '' }
+            }
+            steps {
+                script {
+                    def services = env.CHANGED_SERVICES.split(',')
+                    
+                    // Build each changed service in parallel
+                    def parallelStages = [:]
+                    
+                    services.each { service ->
+                        if (service) {
+                            parallelStages["Build ${service}"] = {
+                                dir("services/${service}") {
+                                    sh 'npm install'
+                                    sh 'npm run build'
+                                    sh 'npm test'
+                                }
+                            }
+                        }
+                    }
+                    
+                    parallel parallelStages
+                }
+            }
+        }
+        
+        stage('Build Shared Libraries') {
+            when {
+                changeset "shared/**"
+            }
+            steps {
+                dir('shared') {
+                    sh 'npm install'
+                    sh 'npm run build'
+                    sh 'npm test'
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                sh 'docker-compose up -d'
+                sh 'npm run test:integration'
+            }
+            post {
+                always {
+                    sh 'docker-compose down'
+                }
+            }
+        }
+        
+        stage('Deploy Services') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    def services = env.CHANGED_SERVICES.split(',')
+                    
+                    services.each { service ->
+                        if (service) {
+                            echo "Deploying ${service}..."
+                            sh "kubectl apply -f services/${service}/k8s/"
+                            sh "kubectl rollout status deployment/${service}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            junit '**/test-results/**/*.xml'
+        }
+    }
+}

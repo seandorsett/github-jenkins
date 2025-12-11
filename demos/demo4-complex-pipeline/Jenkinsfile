@@ -1,0 +1,157 @@
+// Complex Pipeline with Parallel Stages
+// Advanced example showing parallel execution and matrix builds
+
+pipeline {
+    agent none
+    
+    environment {
+        DOCKER_REGISTRY = 'ghcr.io'
+        IMAGE_NAME = 'my-org/my-app'
+    }
+    
+    stages {
+        stage('Parallel Testing') {
+            parallel {
+                stage('Unit Tests') {
+                    agent {
+                        docker {
+                            image 'node:18'
+                        }
+                    }
+                    steps {
+                        sh 'npm install'
+                        sh 'npm run test:unit'
+                    }
+                    post {
+                        always {
+                            junit 'test-results/unit/*.xml'
+                        }
+                    }
+                }
+                
+                stage('Integration Tests') {
+                    agent {
+                        docker {
+                            image 'node:18'
+                        }
+                    }
+                    steps {
+                        sh 'npm install'
+                        sh 'npm run test:integration'
+                    }
+                    post {
+                        always {
+                            junit 'test-results/integration/*.xml'
+                        }
+                    }
+                }
+                
+                stage('Linting') {
+                    agent {
+                        docker {
+                            image 'node:18'
+                        }
+                    }
+                    steps {
+                        sh 'npm install'
+                        sh 'npm run lint'
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            agent any
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                script {
+                    def imageTag = "${env.GIT_COMMIT.take(7)}"
+                    sh """
+                        docker build -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${imageTag} .
+                        docker tag ${DOCKER_REGISTRY}/${IMAGE_NAME}:${imageTag} \
+                                   ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Security Scanning') {
+            agent any
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'develop'
+                }
+            }
+            steps {
+                sh 'trivy image ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest'
+            }
+        }
+        
+        stage('Push to Registry') {
+            agent any
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-registry-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh '''
+                        echo $DOCKER_PASS | docker login ${DOCKER_REGISTRY} -u $DOCKER_USER --password-stdin
+                        docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
+                        docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${GIT_COMMIT:0:7}
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            agent any
+            when {
+                branch 'develop'
+            }
+            steps {
+                sh './deploy-staging.sh'
+            }
+        }
+        
+        stage('Deploy to Production') {
+            agent any
+            when {
+                branch 'main'
+            }
+            input {
+                message "Deploy to production?"
+                ok "Deploy"
+                submitter "admin,ops-team"
+            }
+            steps {
+                sh './deploy-production.sh'
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            slackSend channel: '#deployments',
+                      color: 'good',
+                      message: "Build succeeded: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+        }
+        failure {
+            slackSend channel: '#deployments',
+                      color: 'danger',
+                      message: "Build failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+        }
+    }
+}
